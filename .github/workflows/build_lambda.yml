@@ -51,14 +51,14 @@ jobs:
           AWS_S3_BUCKET_NAME: ${{ secrets.AWS_S3_BUCKET_NAME_DEV }}
         run: |
           aws s3 rm s3://$AWS_S3_BUCKET_NAME/extract/deploy.zip
-          aws s3 cp deploy.zip s3://$AWS_S3_BUCKET_NAME/extract
+          aws s3 cp deploy.zip s3://$AWS_S3_BUCKET_NAME/extract/deploy.zip
       - name: "Upload production deployment file"
         if: ${{ github.ref == 'refs/heads/main' }}
         env:
           AWS_S3_BUCKET_NAME: ${{ secrets.AWS_S3_BUCKET_NAME_PRD }}
         run: |
           aws s3 rm s3://$AWS_S3_BUCKET_NAME/extract/deploy.zip
-          aws s3 cp deploy.zip s3://$AWS_S3_BUCKET_NAME/extract
+          aws s3 cp deploy.zip s3://$AWS_S3_BUCKET_NAME/extract/deploy.zip
       - name: "Update dev lambdas"
         if: ${{ github.ref == 'refs/heads/dev' }}
         env:
