@@ -1,0 +1,61 @@
+name: Lambda deployment
+
+on:
+  push:
+    branches:
+      - main
+      - dev
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions/setup-node@v3
+        with:
+          node-version: 14
+      - name: Install dependencies
+        run: npm install
+      - name: Create zip bundle
+        run: |
+          zip -r deploy.zip . -x "*yarn.lock*" -x "*.git*" -x "*.gitignore*" -x "*deploy.sh*" -x "*package-lock.json*"
+      - uses: actions/upload-artifact@v3
+        with:
+          name: deploy-${{ github.sha }}
+          path: deploy.zip
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    env:
+      GITHUB_SHA: ${{ github.sha }}
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+      - uses: actions/download-artifact@v3
+        with:
+          name: deploy-${{ github.sha }}
+      - name: "Upload dev deployment file"
+        if: ${{ github.ref == 'refs/heads/dev' }}
+        run: |
+          aws s3 rm s3://$AWS_S3_BUCKET_NAME_DEV/extract/deploy.zip
+          aws s3 cp deploy.zip s3://$AWS_S3_BUCKET_NAME_DEV/extract
+      - name: "Upload production deployment file"
+        if: ${{ github.ref == 'refs/heads/main' }}
+        run: |
+          aws s3 rm s3://$AWS_S3_BUCKET_NAME_PRD/extract/deploy.zip
+          aws s3 cp deploy.zip s3://$AWS_S3_BUCKET_NAME_PRD/extract
+      - name: "Update dev lambdas"
+        if: ${{ github.ref == 'refs/heads/dev' }}
+        run: |
+          aws lambda update-function-code --function-name fxhash-dev-extract-small --s3-bucket $AWS_S3_BUCKET_NAME_DEV --s3-key "extract/deploy.zip" --region $AWS_REGION
+          aws lambda update-function-code --function-name fxhash-dev-extract-medium --s3-bucket $AWS_S3_BUCKET_NAME_DEV --s3-key "extract/deploy.zip" --region $AWS_REGION
+          aws lambda update-function-code --function-name fxhash-dev-extract-large --s3-bucket $AWS_S3_BUCKET_NAME_DEV --s3-key "extract/deploy.zip" --region $AWS_REGION
+      - name: "Update production lambdas"
+        if: ${{ github.ref == 'refs/heads/main' }}
+        run: |
+          aws lambda update-function-code --function-name fxhash-prd-extract-small --s3-bucket $AWS_S3_BUCKET_NAME_PRD --s3-key "extract/deploy.zip" --region $AWS_REGION
+          aws lambda update-function-code --function-name fxhash-prd-extract-medium --s3-bucket $AWS_S3_BUCKET_NAME_PRD --s3-key "extract/deploy.zip" --region $AWS_REGION
+          aws lambda update-function-code --function-name fxhash-prd-extract-large --s3-bucket $AWS_S3_BUCKET_NAME_PRD --s3-key "extract/deploy.zip" --region $AWS_REGION
