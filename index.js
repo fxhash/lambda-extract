@@ -281,7 +281,12 @@ exports.handler = async (event, context) => {
     let rawFeatures = null
     try {
       const extractedFeatures = await page.evaluate(
-        () => JSON.stringify(window.$fxhashFeatures)
+        () => {
+          // v3 syntax
+          if (window.$fx?._features) return JSON.stringify(window.$fx._features)
+          // deprecated syntax
+          return JSON.stringify(window.$fxhashFeatures)
+        }
       )
       rawFeatures = (extractedFeatures && JSON.parse(extractedFeatures)) || null
     }
