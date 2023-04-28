@@ -349,6 +349,7 @@ exports.handler = async (event, context) => {
     }
   }
   catch (error) {
+    console.error(error)
     // throw error
     return {
       statusCode: 500,
