@@ -115,7 +115,7 @@ function processRawTokenFeatures(rawFeatures) {
   const features = []
   // first check if features are an object
   if (typeof rawFeatures !== "object" || Array.isArray(rawFeatures) || !rawFeatures) {
-    throw null
+    throw new Error("Invalid features")
   }
   // go through each property and process it
   for (const name in rawFeatures) {
@@ -234,7 +234,7 @@ exports.handler = async (event, context) => {
         throw ERRORS.TIMEOUT
       }
       else {
-        throw null
+        throw err
       }
     }
 
@@ -264,7 +264,7 @@ exports.handler = async (event, context) => {
           if (!el || el.tagName !== "CANVAS") return null
           return el.toDataURL()
         })
-        if (!base64) throw null
+        if (!base64) throw new Error("No canvas found")
         // remove the base64 mimetype at the beginning of the string
         const pureBase64 = base64.replace(/^data:image\/png;base64,/, "")
         capture = Buffer.from(pureBase64, "base64")
