@@ -45,6 +45,7 @@ const ERRORS = {
   CANVAS_CAPTURE_FAILED: "CANVAS_CAPTURE_FAILED",
   TIMEOUT: "TIMEOUT",
   EXTRACT_FEATURES_FAILED: "EXTRACT_FEATURES_FAILED",
+  APPROACHING_TIMEOUT: "APPROACHING_TIMEOUT",
 }
 // the different capture modes
 const CAPTURE_MODES = ["CANVAS", "VIEWPORT"]
@@ -113,6 +114,33 @@ const waitPreview = (triggerMode, page, delay) =>
       ]).then(resolve)
     }
   })
+
+const waitPreviewWithFallback = async (context, triggerMode, page, delay) => {
+  // set up a promise that will reject if the lambda is about to timeout
+  const timeoutThresholdMillis = 30_000
+  const lambdaTimeoutPromise = new Promise((_, reject) =>
+    setTimeout(
+      () => reject(new Error(ERRORS.APPROACHING_TIMEOUT)),
+      context.getRemainingTimeInMillis() - timeoutThresholdMillis
+    )
+  )
+
+  try {
+    // wait for the preview or the lambda timeout
+    await Promise.race([
+      waitPreview(triggerMode, page, delay),
+      lambdaTimeoutPromise,
+    ])
+  } catch (err) {
+    // catch the error if it's due to the lambda timeout
+    if (err.message === ERRORS.APPROACHING_TIMEOUT) {
+      console.log("Fallback triggered due to Lambda timeout")
+      return
+    }
+    // otherwise, rethrow the error
+    throw err
+  }
+}
 
 // process the raw features extracted into attributes
 function processRawTokenFeatures(rawFeatures) {
@@ -296,7 +324,9 @@ exports.handler = async (event, context) => {
       }
     }
 
-    const body = JSON.parse(event.body)
+    const { useFallbackCaptureOnTimeout = false, ...body } = JSON.parse(
+      event.body
+    )
     const { url, mode, resX, resY, triggerMode, delay, canvasSelector } =
       validateParams(body)
 
@@ -342,32 +372,13 @@ exports.handler = async (event, context) => {
       return await uploadToS3(context, capture, features)
     }
 
-    // set up a promise that will reject if the lambda is about to timeout
-    const timeoutThresholdMillis = 30_000
-    const lambdaTimeoutPromise = new Promise((_, reject) =>
-      setTimeout(
-        () => reject(new Error("Lambda function is about to timeout")),
-        context.getRemainingTimeInMillis() - timeoutThresholdMillis
-      )
-    )
-
-    try {
-      // wait for the preview or the lambda timeout
-      await Promise.race([
-        waitPreview(triggerMode, delay),
-        lambdaTimeoutPromise,
-      ])
-      httpResponse = await processCapture()
-    } catch (err) {
-      // if we have a timeout, we need to try to generate a capture anyway
-      if (!httpResponse) {
-        console.log(
-          "Fallback triggered due to Lambda timeout or error: ",
-          err.message
-        )
-        httpResponse = await processCapture()
-      }
+    if (useFallbackCaptureOnTimeout) {
+      await waitPreviewWithFallback(context, triggerMode, page, delay)
+    } else {
+      await waitPreview(triggerMode, page, delay)
     }
+
+    httpResponse = await processCapture()
   } catch (error) {
     console.error(error)
     return {
