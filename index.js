@@ -185,7 +185,8 @@ const extractFeatures = async page => {
       return JSON.stringify(window.$fxhashFeatures)
     })
     rawFeatures = (extractedFeatures && JSON.parse(extractedFeatures)) || null
-  } catch {
+  } catch (e) {
+    console.error("Error extracting features:", e)
     throw ERRORS.EXTRACT_FEATURES_FAILED
   }
 
@@ -368,7 +369,7 @@ exports.handler = async (event, context) => {
 
     const processCapture = async () => {
       const capture = await performCapture(mode, page, canvasSelector)
-      const features = (await extractFeatures()) || []
+      const features = (await extractFeatures(page)) || []
       return await uploadToS3(context, capture, features)
     }
 
