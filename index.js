@@ -194,7 +194,7 @@ const extractFeatures = async page => {
   try {
     return processRawTokenFeatures(rawFeatures)
   } catch (e) {
-    console.error("Error processing features:", error)
+    console.error("Error processing features:", e)
   }
 }
 
