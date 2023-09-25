@@ -33,6 +33,8 @@ const SUPPORTED_URLS = [
   "https://gateway.fxhash2.xyz/ipfs/",
   "https://gateway.fxhash-dev.xyz/ipfs/",
   "https://gateway.fxhash-dev2.xyz/ipfs/",
+  "https://fs-emulator.fxhash-dev.xyz/",
+  "https://fs-emulator.fxhash.xyz/",
 ]
 // the list of errors the lambda can return
 const ERRORS = {
