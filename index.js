@@ -104,9 +104,11 @@ const sleep = time =>
 const waitPreview = (triggerMode, page, delay) =>
   new Promise(async resolve => {
     if (triggerMode === "DELAY") {
+      console.log("waiting for delay:", delay)
       await sleep(delay)
       resolve()
     } else if (triggerMode === "FN_TRIGGER") {
+      console.log("waiting for function trigger...")
       Promise.race([
         // add event listener and wait for event to fire before returning
         page.evaluate(function () {
@@ -122,6 +124,8 @@ const waitPreview = (triggerMode, page, delay) =>
   })
 
 const waitPreviewWithFallback = async (context, triggerMode, page, delay) => {
+  console.log("configuring fallback...")
+
   // set up a promise that will reject if the lambda is about to timeout
   const timeoutThresholdMillis = 30_000
   const lambdaTimeoutPromise = new Promise((_, reject) =>
@@ -181,6 +185,8 @@ function processRawTokenFeatures(rawFeatures) {
 }
 
 const extractFeatures = async page => {
+  console.log("extracting features...")
+
   // find $fxhashFeatures in the window object
   let rawFeatures = null
   try {
@@ -206,6 +212,7 @@ const extractFeatures = async page => {
 
 const performCanvasCapture = async (page, canvasSelector) => {
   try {
+    console.log("converting canvas to PNG with selector:", canvasSelector)
     // get the base64 image from the CANVAS targetted
     const base64 = await page.$eval(canvasSelector, el => {
       if (!el || el.tagName !== "CANVAS") return null
@@ -221,6 +228,8 @@ const performCanvasCapture = async (page, canvasSelector) => {
 }
 
 const performCapture = async (mode, page, canvasSelector) => {
+  console.log("performing capture...")
+
   // if viewport mode, use the native puppeteer page.screenshot
   if (mode === "VIEWPORT") {
     // we simply take a capture of the viewport
@@ -337,6 +346,18 @@ exports.handler = async (event, context) => {
     const { url, mode, resX, resY, triggerMode, delay, canvasSelector } =
       validateParams(body)
 
+    console.log("running capture with params:", {
+      url,
+      mode,
+      resX,
+      resY,
+      triggerMode,
+      delay,
+      canvasSelector,
+    })
+
+    console.log("bootstrapping chromium...")
+
     // bootstrap chromium
     browser = await chromium.puppeteer.launch({
       args: chromium.args,
@@ -345,6 +366,8 @@ exports.handler = async (event, context) => {
       headless: chromium.headless,
       ignoreHTTPSErrors: true,
     })
+
+    console.log("configuring page...")
 
     // browse to the page
     const viewportSettings = {
@@ -358,9 +381,11 @@ exports.handler = async (event, context) => {
     // try to reach the page
     let response
     try {
+      console.log("navigating to: ", url)
       response = await page.goto(url, {
         timeout: PAGE_TIMEOUT,
       })
+      console.log(`navigated to URL with response status: ${response.status()}`);
     } catch (err) {
       if (err && err.name && err.name === "TimeoutError") {
         throw ERRORS.TIMEOUT
@@ -376,7 +401,10 @@ exports.handler = async (event, context) => {
     const processCapture = async () => {
       const capture = await performCapture(mode, page, canvasSelector)
       const features = (await extractFeatures(page)) || []
-      return await uploadToS3(context, capture, features)
+      console.log("uploading capture to S3...");
+      const upload = await uploadToS3(context, capture, features)
+      console.log("successfully uploaded capture to S3");
+      return upload
     }
 
     if (useFallbackCaptureOnTimeout) {
