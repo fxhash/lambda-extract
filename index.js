@@ -104,11 +104,11 @@ const sleep = time =>
 const waitPreview = (triggerMode, page, delay) =>
   new Promise(async resolve => {
     if (triggerMode === "DELAY") {
-      console.log("Waiting for delay:", delay)
+      console.log("waiting for delay:", delay)
       await sleep(delay)
       resolve()
     } else if (triggerMode === "FN_TRIGGER") {
-      console.log("Waiting for function trigger...")
+      console.log("waiting for function trigger...")
       Promise.race([
         // add event listener and wait for event to fire before returning
         page.evaluate(function () {
@@ -124,7 +124,7 @@ const waitPreview = (triggerMode, page, delay) =>
   })
 
 const waitPreviewWithFallback = async (context, triggerMode, page, delay) => {
-  console.log("Configuring fallback...")
+  console.log("configuring fallback...")
 
   // set up a promise that will reject if the lambda is about to timeout
   const timeoutThresholdMillis = 30_000
