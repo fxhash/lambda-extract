@@ -223,6 +223,7 @@ const performCanvasCapture = async (page, canvasSelector) => {
     const pureBase64 = base64.replace(/^data:image\/png;base64,/, "")
     return Buffer.from(pureBase64, "base64")
   } catch (err) {
+    console.log(err)
     throw ERRORS.CANVAS_CAPTURE_FAILED
   }
 }
@@ -387,6 +388,7 @@ exports.handler = async (event, context) => {
       })
       console.log(`navigated to URL with response status: ${response.status()}`);
     } catch (err) {
+      console.log(err)
       if (err && err.name && err.name === "TimeoutError") {
         throw ERRORS.TIMEOUT
       } else {
