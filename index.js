@@ -36,6 +36,8 @@ const SUPPORTED_URLS = [
   "https://fs-emulator.fxhash-dev.xyz/",
   "https://fs-emulator.fxhash.xyz/",
   "https://fs-emulator.fxhash2.xyz/",
+  "https://file-api.fxhash-dev.xyz/",
+  "https://file-api.fxhash.xyz/",
   "https://onchfs.fxhash-dev2.xyz/",
   "https://onchfs.fxhash2.xyz/",
   "https://onchfs.fxhash.xyz/",
@@ -386,7 +388,7 @@ exports.handler = async (event, context) => {
       response = await page.goto(url, {
         timeout: PAGE_TIMEOUT,
       })
-      console.log(`navigated to URL with response status: ${response.status()}`);
+      console.log(`navigated to URL with response status: ${response.status()}`)
     } catch (err) {
       console.log(err)
       if (err && err.name && err.name === "TimeoutError") {
@@ -403,9 +405,9 @@ exports.handler = async (event, context) => {
     const processCapture = async () => {
       const capture = await performCapture(mode, page, canvasSelector)
       const features = (await extractFeatures(page)) || []
-      console.log("uploading capture to S3...");
+      console.log("uploading capture to S3...")
       const upload = await uploadToS3(context, capture, features)
-      console.log("successfully uploaded capture to S3");
+      console.log("successfully uploaded capture to S3")
       return upload
     }
 
