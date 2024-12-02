@@ -5,6 +5,10 @@ const {
 } = require("@aws-sdk/client-s3")
 const { getSignedUrl } = require("@aws-sdk/s3-request-presigner")
 const chromium = require("chrome-aws-lambda")
+const PNG = require("pngjs").PNG
+const { GIFEncoder, quantize, applyPalette } = require("gifenc")
+
+const fs = require("fs").promises
 
 // bucket name from the env variables
 const S3_BUCKET = process.env.S3_BUCKET
@@ -18,6 +22,18 @@ const DEFAULT_VIEWPORT_HEIGHT = 800
 const PAGE_TIMEOUT = 300000
 const DELAY_MIN = 0
 const DELAY_MAX = 600000 // 10 min
+
+// GIF specific constants
+const GIF_DEFAULTS = {
+  FRAME_COUNT: 30,
+  FRAME_DELAY: 100, // milliseconds between frames
+  QUALITY: 10,
+  MIN_FRAMES: 2,
+  MAX_FRAMES: 100,
+  MIN_DELAY: 20,
+  MAX_DELAY: 1000,
+}
+
 // response headers - maximizes compatibility
 const HEADERS = {
   "Content-Type": "application/json",
@@ -54,6 +70,7 @@ const ERRORS = {
   TIMEOUT: "TIMEOUT",
   EXTRACT_FEATURES_FAILED: "EXTRACT_FEATURES_FAILED",
   APPROACHING_TIMEOUT: "APPROACHING_TIMEOUT",
+  INVALID_GIF_PARAMETERS: "INVALID_GIF_PARAMETERS",
 }
 // the different capture modes
 const CAPTURE_MODES = ["CANVAS", "VIEWPORT"]
@@ -91,6 +108,22 @@ function isTriggerValid(triggerMode, delay) {
     // fn trigger doesn't need any param
     return true
   }
+}
+
+function validateGifParams(frameCount, frameDelay) {
+  if (
+    frameCount < GIF_DEFAULTS.MIN_FRAMES ||
+    frameCount > GIF_DEFAULTS.MAX_FRAMES
+  ) {
+    return false
+  }
+  if (
+    frameDelay < GIF_DEFAULTS.MIN_DELAY ||
+    frameDelay > GIF_DEFAULTS.MAX_DELAY
+  ) {
+    return false
+  }
+  return true
 }
 
 const sleep = time =>
@@ -152,6 +185,46 @@ const waitPreviewWithFallback = async (context, triggerMode, page, delay) => {
     // otherwise, rethrow the error
     throw err
   }
+}
+
+async function captureFramesToGif(frames, width, height, frameDelay) {
+  const gif = GIFEncoder()
+
+  for (const frame of frames) {
+    let pngData
+    if (typeof frame === "string") {
+      // For base64 data from canvas
+      const pureBase64 = frame.replace(/^data:image\/png;base64,/, "")
+      const buffer = Buffer.from(pureBase64, "base64")
+      pngData = await new Promise((resolve, reject) => {
+        new PNG().parse(buffer, (err, data) => {
+          if (err) reject(err)
+          resolve(data)
+        })
+      })
+    } else {
+      // For binary data from viewport
+      pngData = await new Promise((resolve, reject) => {
+        new PNG().parse(frame, (err, data) => {
+          if (err) reject(err)
+          resolve(data)
+        })
+      })
+    }
+
+    // Convert to format expected by gifenc
+    const pixels = new Uint8Array(pngData.data)
+    const palette = quantize(pixels, 256)
+    const index = applyPalette(pixels, palette)
+
+    gif.writeFrame(index, width, height, {
+      palette,
+      delay: frameDelay,
+    })
+  }
+
+  gif.finish()
+  return Buffer.from(gif.bytes())
 }
 
 // process the raw features extracted into attributes
@@ -230,40 +303,45 @@ const performCanvasCapture = async (page, canvasSelector) => {
   }
 }
 
-const performCapture = async (mode, page, canvasSelector) => {
+const performCapture = async (
+  mode,
+  page,
+  canvasSelector,
+  gif,
+  frameCount,
+  frameDelay
+) => {
   console.log("performing capture...")
 
   // if viewport mode, use the native puppeteer page.screenshot
   if (mode === "VIEWPORT") {
     // we simply take a capture of the viewport
-    return page.screenshot()
+    return captureViewport(page, gif, frameCount, frameDelay)
   }
   // if the mode is canvas, we need to execute som JS on the client to select
   // the canvas and generate a dataURL to bridge it in here
   else if (mode === "CANVAS") {
-    return performCanvasCapture(page, canvasSelector)
+    return captureCanvas(page, canvasSelector, gif, frameCount, frameDelay)
   }
 }
 
-const uploadToS3 = async (context, capture, features) => {
-  // the base key, root folder (the fn name is used)
+const uploadToS3 = async (context, capture, features, isGif) => {
   const baseKey = `${context.functionName}/${context.awsRequestId}`
+  const extension = isGif ? "gif" : "png"
+  const contentType = isGif ? "image/gif" : "image/png"
 
-  // create the S3 client
   const client = new S3Client({
     region: S3_REGION,
   })
 
-  // upload the preview PNG
   await client.send(
     new PutObjectCommand({
       Bucket: S3_BUCKET,
-      Key: `${baseKey}/preview.png`,
+      Key: `${baseKey}/preview.${extension}`,
       Body: capture,
-      ContentType: "image/png",
+      ContentType: contentType,
     })
   )
-
   // upload the features object to a JSON file
   await client.send(
     new PutObjectCommand({
@@ -280,7 +358,7 @@ const uploadToS3 = async (context, capture, features) => {
       client,
       new GetObjectCommand({
         Bucket: S3_BUCKET,
-        Key: `${baseKey}/preview.png`,
+        Key: `${baseKey}/preview.${extension}`,
       }),
       { expiresIn: 3600 }
     ),
@@ -303,12 +381,18 @@ const validateParams = ({
   triggerMode = "DELAY",
   delay,
   canvasSelector,
+  gif,
+  frameCount,
+  frameDelay,
 }) => {
   if (!url || !mode) throw ERRORS.MISSING_PARAMETERS
   if (!isUrlValid(url)) throw ERRORS.UNSUPPORTED_URL
   if (!CAPTURE_MODES.includes(mode)) throw ERRORS.INVALID_PARAMETERS
   if (!isTriggerValid(triggerMode, delay))
     throw ERRORS.INVALID_TRIGGER_PARAMETERS
+
+  if (gif && !validateGifParams(frameCount, frameDelay))
+    throw ERRORS.INVALID_GIF_PARAMETERS
 
   if (mode === "VIEWPORT") {
     if (!resX || !resY) throw ERRORS.MISSING_PARAMETERS
@@ -326,7 +410,87 @@ const validateParams = ({
   } else if (mode === "CANVAS") {
     if (!canvasSelector) throw ERRORS.MISSING_PARAMETERS
   }
-  return { url, mode, resX, resY, triggerMode, delay, canvasSelector }
+  return {
+    url,
+    mode,
+    resX,
+    resY,
+    triggerMode,
+    delay,
+    canvasSelector,
+    gif,
+    frameCount,
+    frameDelay,
+  }
+}
+
+async function captureViewport(page, isGif, frameCount, frameDelay) {
+  if (!isGif) {
+    return await page.screenshot()
+  }
+
+  const frames = []
+  for (let i = 0; i < frameCount; i++) {
+    // Capture raw pixels instead of base64
+    const frameBuffer = await page.screenshot({
+      encoding: "binary",
+    })
+    frames.push(frameBuffer)
+    await sleep(frameDelay)
+  }
+
+  const viewport = page.viewport()
+  return await captureFramesToGif(
+    frames,
+    viewport.width,
+    viewport.height,
+    frameDelay
+  )
+}
+
+async function captureCanvas(
+  page,
+  canvasSelector,
+  isGif,
+  frameCount,
+  frameDelay
+) {
+  if (!isGif) {
+    // get the base64 image from the CANVAS targetted
+    const base64 = await page.$eval(canvasSelector, el => {
+      if (!el || el.tagName !== "CANVAS") return null
+      return el.toDataURL()
+    })
+    if (!base64) throw null
+    // remove the base64 mimetype at the beginning of the string
+    const pureBase64 = base64.replace(/^data:image\/png;base64,/, "")
+    return Buffer.from(pureBase64, "base64")
+  }
+
+  const frames = []
+
+  for (let i = 0; i < frameCount; i++) {
+    // Get raw pixel data from canvas
+    const base64 = await page.$eval(canvasSelector, el => {
+      if (!el || el.tagName !== "CANVAS") return null
+      return el.toDataURL()
+    })
+    if (!base64) throw null
+    frames.push(base64)
+    await sleep(frameDelay)
+  }
+
+  const dimensions = await page.$eval(canvasSelector, el => ({
+    width: el.width,
+    height: el.height,
+  }))
+
+  return await captureFramesToGif(
+    frames,
+    dimensions.width,
+    dimensions.height,
+    frameDelay
+  )
 }
 
 // main invocation handler
@@ -346,8 +510,18 @@ exports.handler = async (event, context) => {
     const { useFallbackCaptureOnTimeout = false, ...body } = JSON.parse(
       event.body
     )
-    const { url, mode, resX, resY, triggerMode, delay, canvasSelector } =
-      validateParams(body)
+    const {
+      url,
+      mode,
+      resX,
+      resY,
+      triggerMode,
+      delay,
+      canvasSelector,
+      gif = false,
+      frameCount = GIF_DEFAULTS.FRAME_COUNT,
+      frameDelay = GIF_DEFAULTS.FRAME_DELAY,
+    } = validateParams(body)
 
     console.log("running capture with params:", {
       url,
@@ -357,6 +531,9 @@ exports.handler = async (event, context) => {
       triggerMode,
       delay,
       canvasSelector,
+      gif,
+      frameCount,
+      frameDelay,
     })
 
     console.log("bootstrapping chromium...")
@@ -403,10 +580,17 @@ exports.handler = async (event, context) => {
     if (response.status() !== 200) throw ERRORS.HTTP_ERROR
 
     const processCapture = async () => {
-      const capture = await performCapture(mode, page, canvasSelector)
+      const capture = await performCapture(
+        mode,
+        page,
+        canvasSelector,
+        gif,
+        frameCount,
+        frameDelay
+      )
       const features = (await extractFeatures(page)) || []
       console.log("uploading capture to S3...")
-      const upload = await uploadToS3(context, capture, features)
+      const upload = await uploadToS3(context, capture, features, gif)
       console.log("successfully uploaded capture to S3")
       return upload
     }
