@@ -8,8 +8,6 @@ const chromium = require("chrome-aws-lambda")
 const PNG = require("pngjs").PNG
 const { GIFEncoder, quantize, applyPalette } = require("gifenc")
 
-const fs = require("fs").promises
-
 // bucket name from the env variables
 const S3_BUCKET = process.env.S3_BUCKET
 const S3_REGION = process.env.S3_REGION
@@ -26,12 +24,15 @@ const DELAY_MAX = 600000 // 10 min
 // GIF specific constants
 const GIF_DEFAULTS = {
   FRAME_COUNT: 30,
-  FRAME_DELAY: 100, // milliseconds between frames
+  CAPTURE_INTERVAL: 100, // milliseconds between capturing frames
+  PLAYBACK_FPS: 10, // default playback speed in frames per second
   QUALITY: 10,
   MIN_FRAMES: 2,
   MAX_FRAMES: 100,
-  MIN_DELAY: 20,
-  MAX_DELAY: 1000,
+  MIN_CAPTURE_INTERVAL: 20,
+  MAX_CAPTURE_INTERVAL: 1000,
+  MIN_FPS: 1,
+  MAX_FPS: 50,
 }
 
 // response headers - maximizes compatibility
@@ -110,19 +111,28 @@ function isTriggerValid(triggerMode, delay) {
   }
 }
 
-function validateGifParams(frameCount, frameDelay) {
+function validateGifParams(frameCount, captureInterval, playbackFps) {
   if (
     frameCount < GIF_DEFAULTS.MIN_FRAMES ||
     frameCount > GIF_DEFAULTS.MAX_FRAMES
   ) {
     return false
   }
+
   if (
-    frameDelay < GIF_DEFAULTS.MIN_DELAY ||
-    frameDelay > GIF_DEFAULTS.MAX_DELAY
+    captureInterval < GIF_DEFAULTS.MIN_CAPTURE_INTERVAL ||
+    captureInterval > GIF_DEFAULTS.MAX_CAPTURE_INTERVAL
   ) {
     return false
   }
+
+  if (
+    playbackFps < GIF_DEFAULTS.MIN_FPS ||
+    playbackFps > GIF_DEFAULTS.MAX_FPS
+  ) {
+    return false
+  }
+
   return true
 }
 
@@ -187,8 +197,12 @@ const waitPreviewWithFallback = async (context, triggerMode, page, delay) => {
   }
 }
 
-async function captureFramesToGif(frames, width, height, frameDelay) {
+async function captureFramesToGif(frames, width, height, playbackFps) {
   const gif = GIFEncoder()
+  const playbackDelay = Math.round(1000 / playbackFps)
+  console.log(
+    `Creating GIF with playback delay: ${playbackDelay}ms (${playbackFps} FPS)`
+  )
 
   for (const frame of frames) {
     let pngData
@@ -212,14 +226,13 @@ async function captureFramesToGif(frames, width, height, frameDelay) {
       })
     }
 
-    // Convert to format expected by gifenc
     const pixels = new Uint8Array(pngData.data)
     const palette = quantize(pixels, 256)
     const index = applyPalette(pixels, palette)
 
     gif.writeFrame(index, width, height, {
       palette,
-      delay: frameDelay,
+      delay: playbackDelay, // Use the playback timing here
     })
   }
 
@@ -285,43 +298,33 @@ const extractFeatures = async page => {
   }
 }
 
-const performCanvasCapture = async (page, canvasSelector) => {
-  try {
-    console.log("converting canvas to PNG with selector:", canvasSelector)
-    // get the base64 image from the CANVAS targetted
-    const base64 = await page.$eval(canvasSelector, el => {
-      if (!el || el.tagName !== "CANVAS") return null
-      return el.toDataURL()
-    })
-    if (!base64) throw new Error("No canvas found")
-    // remove the base64 mimetype at the beginning of the string
-    const pureBase64 = base64.replace(/^data:image\/png;base64,/, "")
-    return Buffer.from(pureBase64, "base64")
-  } catch (err) {
-    console.log(err)
-    throw ERRORS.CANVAS_CAPTURE_FAILED
-  }
-}
-
 const performCapture = async (
   mode,
   page,
   canvasSelector,
   gif,
   frameCount,
-  frameDelay
+  captureInterval,
+  playbackFps
 ) => {
   console.log("performing capture...")
 
   // if viewport mode, use the native puppeteer page.screenshot
   if (mode === "VIEWPORT") {
     // we simply take a capture of the viewport
-    return captureViewport(page, gif, frameCount, frameDelay)
+    return captureViewport(page, gif, frameCount, captureInterval, playbackFps)
   }
   // if the mode is canvas, we need to execute som JS on the client to select
   // the canvas and generate a dataURL to bridge it in here
   else if (mode === "CANVAS") {
-    return captureCanvas(page, canvasSelector, gif, frameCount, frameDelay)
+    return captureCanvas(
+      page,
+      canvasSelector,
+      gif,
+      frameCount,
+      captureInterval,
+      playbackFps
+    )
   }
 }
 
@@ -383,7 +386,8 @@ const validateParams = ({
   canvasSelector,
   gif,
   frameCount,
-  frameDelay,
+  captureInterval,
+  playbackFps,
 }) => {
   if (!url || !mode) throw ERRORS.MISSING_PARAMETERS
   if (!isUrlValid(url)) throw ERRORS.UNSUPPORTED_URL
@@ -391,7 +395,7 @@ const validateParams = ({
   if (!isTriggerValid(triggerMode, delay))
     throw ERRORS.INVALID_TRIGGER_PARAMETERS
 
-  if (gif && !validateGifParams(frameCount, frameDelay))
+  if (gif && !validateGifParams(frameCount, captureInterval, playbackFps))
     throw ERRORS.INVALID_GIF_PARAMETERS
 
   if (mode === "VIEWPORT") {
@@ -420,11 +424,18 @@ const validateParams = ({
     canvasSelector,
     gif,
     frameCount,
-    frameDelay,
+    captureInterval,
+    playbackFps,
   }
 }
 
-async function captureViewport(page, isGif, frameCount, frameDelay) {
+async function captureViewport(
+  page,
+  isGif,
+  frameCount,
+  captureInterval,
+  playbackFps
+) {
   if (!isGif) {
     return await page.screenshot()
   }
@@ -436,7 +447,7 @@ async function captureViewport(page, isGif, frameCount, frameDelay) {
       encoding: "binary",
     })
     frames.push(frameBuffer)
-    await sleep(frameDelay)
+    await sleep(captureInterval)
   }
 
   const viewport = page.viewport()
@@ -444,7 +455,7 @@ async function captureViewport(page, isGif, frameCount, frameDelay) {
     frames,
     viewport.width,
     viewport.height,
-    frameDelay
+    playbackFps
   )
 }
 
@@ -453,44 +464,50 @@ async function captureCanvas(
   canvasSelector,
   isGif,
   frameCount,
-  frameDelay
+  captureInterval,
+  playbackFps
 ) {
-  if (!isGif) {
-    // get the base64 image from the CANVAS targetted
-    const base64 = await page.$eval(canvasSelector, el => {
-      if (!el || el.tagName !== "CANVAS") return null
-      return el.toDataURL()
-    })
-    if (!base64) throw null
-    // remove the base64 mimetype at the beginning of the string
-    const pureBase64 = base64.replace(/^data:image\/png;base64,/, "")
-    return Buffer.from(pureBase64, "base64")
+  try {
+    if (!isGif) {
+      // get the base64 image from the CANVAS targetted
+      const base64 = await page.$eval(canvasSelector, el => {
+        if (!el || el.tagName !== "CANVAS") return null
+        return el.toDataURL()
+      })
+      if (!base64) throw null
+      // remove the base64 mimetype at the beginning of the string
+      const pureBase64 = base64.replace(/^data:image\/png;base64,/, "")
+      return Buffer.from(pureBase64, "base64")
+    }
+
+    const frames = []
+
+    for (let i = 0; i < frameCount; i++) {
+      // Get raw pixel data from canvas
+      const base64 = await page.$eval(canvasSelector, el => {
+        if (!el || el.tagName !== "CANVAS") return null
+        return el.toDataURL()
+      })
+      if (!base64) throw null
+      frames.push(base64)
+      await sleep(captureInterval)
+    }
+
+    const dimensions = await page.$eval(canvasSelector, el => ({
+      width: el.width,
+      height: el.height,
+    }))
+
+    return await captureFramesToGif(
+      frames,
+      dimensions.width,
+      dimensions.height,
+      playbackFps
+    )
+  } catch (e) {
+    console.error(e)
+    throw ERRORS.CANVAS_CAPTURE_FAILED
   }
-
-  const frames = []
-
-  for (let i = 0; i < frameCount; i++) {
-    // Get raw pixel data from canvas
-    const base64 = await page.$eval(canvasSelector, el => {
-      if (!el || el.tagName !== "CANVAS") return null
-      return el.toDataURL()
-    })
-    if (!base64) throw null
-    frames.push(base64)
-    await sleep(frameDelay)
-  }
-
-  const dimensions = await page.$eval(canvasSelector, el => ({
-    width: el.width,
-    height: el.height,
-  }))
-
-  return await captureFramesToGif(
-    frames,
-    dimensions.width,
-    dimensions.height,
-    frameDelay
-  )
 }
 
 // main invocation handler
@@ -520,7 +537,8 @@ exports.handler = async (event, context) => {
       canvasSelector,
       gif = false,
       frameCount = GIF_DEFAULTS.FRAME_COUNT,
-      frameDelay = GIF_DEFAULTS.FRAME_DELAY,
+      captureInterval = GIF_DEFAULTS.CAPTURE_INTERVAL,
+      playbackFps = GIF_DEFAULTS.PLAYBACK_FPS,
     } = validateParams(body)
 
     console.log("running capture with params:", {
@@ -533,7 +551,8 @@ exports.handler = async (event, context) => {
       canvasSelector,
       gif,
       frameCount,
-      frameDelay,
+      captureInterval,
+      playbackFps,
     })
 
     console.log("bootstrapping chromium...")
@@ -586,7 +605,8 @@ exports.handler = async (event, context) => {
         canvasSelector,
         gif,
         frameCount,
-        frameDelay
+        captureInterval,
+        playbackFps
       )
       const features = (await extractFeatures(page)) || []
       console.log("uploading capture to S3...")
