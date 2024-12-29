@@ -7,6 +7,7 @@ const { getSignedUrl } = require("@aws-sdk/s3-request-presigner")
 const chromium = require("chrome-aws-lambda")
 const PNG = require("pngjs").PNG
 const { GIFEncoder, quantize, applyPalette } = require("gifenc")
+const { performance } = require("perf_hooks")
 
 // bucket name from the env variables
 const S3_BUCKET = process.env.S3_BUCKET
@@ -441,13 +442,38 @@ async function captureViewport(
   }
 
   const frames = []
+  let lastCaptureStart = performance.now()
+
   for (let i = 0; i < frameCount; i++) {
-    // Capture raw pixels instead of base64
+    // Record start time of screenshot operation
+    const captureStart = performance.now()
+
+    // Capture raw pixels
     const frameBuffer = await page.screenshot({
       encoding: "binary",
     })
     frames.push(frameBuffer)
-    await sleep(captureInterval)
+
+    // Calculate how long the capture took
+    const captureDuration = performance.now() - captureStart
+
+    // Calculate the actual time we need to wait
+    // If capture took longer than interval, we'll skip the wait
+    const adjustedInterval = Math.max(0, captureInterval - captureDuration)
+
+    // Log timing information for debugging
+    console.log(`Frame ${i + 1}/${frameCount}:`, {
+      captureDuration,
+      adjustedInterval,
+      totalFrameTime: performance.now() - lastCaptureStart,
+    })
+
+    if (adjustedInterval > 0) {
+      await sleep(adjustedInterval)
+    }
+
+    // Update last capture time for next iteration
+    lastCaptureStart = performance.now()
   }
 
   const viewport = page.viewport()
@@ -481,8 +507,11 @@ async function captureCanvas(
     }
 
     const frames = []
+    let lastCaptureStart = Date.now()
 
     for (let i = 0; i < frameCount; i++) {
+      const captureStart = Date.now()
+
       // Get raw pixel data from canvas
       const base64 = await page.$eval(canvasSelector, el => {
         if (!el || el.tagName !== "CANVAS") return null
@@ -490,7 +519,22 @@ async function captureCanvas(
       })
       if (!base64) throw null
       frames.push(base64)
-      await sleep(captureInterval)
+
+      // Calculate timing adjustments
+      const captureDuration = Date.now() - captureStart
+      const adjustedInterval = Math.max(0, captureInterval - captureDuration)
+
+      console.log(`Frame ${i + 1}/${frameCount}:`, {
+        captureDuration,
+        adjustedInterval,
+        totalFrameTime: Date.now() - lastCaptureStart,
+      })
+
+      if (adjustedInterval > 0) {
+        await sleep(adjustedInterval)
+      }
+
+      lastCaptureStart = Date.now()
     }
 
     const dimensions = await page.$eval(canvasSelector, el => ({
