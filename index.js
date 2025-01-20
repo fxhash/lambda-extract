@@ -5,6 +5,9 @@ const {
 } = require("@aws-sdk/client-s3")
 const { getSignedUrl } = require("@aws-sdk/s3-request-presigner")
 const chromium = require("chrome-aws-lambda")
+const PNG = require("pngjs").PNG
+const { GIFEncoder, quantize, applyPalette } = require("gifenc")
+const { performance } = require("perf_hooks")
 
 // bucket name from the env variables
 const S3_BUCKET = process.env.S3_BUCKET
@@ -18,6 +21,21 @@ const DEFAULT_VIEWPORT_HEIGHT = 800
 const PAGE_TIMEOUT = 300000
 const DELAY_MIN = 0
 const DELAY_MAX = 600000 // 10 min
+
+// GIF specific constants
+const GIF_DEFAULTS = {
+  FRAME_COUNT: 30,
+  CAPTURE_INTERVAL: 100, // milliseconds between capturing frames
+  PLAYBACK_FPS: 10, // default playback speed in frames per second
+  QUALITY: 10,
+  MIN_FRAMES: 2,
+  MAX_FRAMES: 100,
+  MIN_CAPTURE_INTERVAL: 20,
+  MAX_CAPTURE_INTERVAL: 15000,
+  MIN_FPS: 1,
+  MAX_FPS: 50,
+}
+
 // response headers - maximizes compatibility
 const HEADERS = {
   "Content-Type": "application/json",
@@ -54,6 +72,7 @@ const ERRORS = {
   TIMEOUT: "TIMEOUT",
   EXTRACT_FEATURES_FAILED: "EXTRACT_FEATURES_FAILED",
   APPROACHING_TIMEOUT: "APPROACHING_TIMEOUT",
+  INVALID_GIF_PARAMETERS: "INVALID_GIF_PARAMETERS",
 }
 // the different capture modes
 const CAPTURE_MODES = ["CANVAS", "VIEWPORT"]
@@ -91,6 +110,31 @@ function isTriggerValid(triggerMode, delay) {
     // fn trigger doesn't need any param
     return true
   }
+}
+
+function validateGifParams(frameCount, captureInterval, playbackFps) {
+  if (
+    frameCount < GIF_DEFAULTS.MIN_FRAMES ||
+    frameCount > GIF_DEFAULTS.MAX_FRAMES
+  ) {
+    return false
+  }
+
+  if (
+    captureInterval < GIF_DEFAULTS.MIN_CAPTURE_INTERVAL ||
+    captureInterval > GIF_DEFAULTS.MAX_CAPTURE_INTERVAL
+  ) {
+    return false
+  }
+
+  if (
+    playbackFps < GIF_DEFAULTS.MIN_FPS ||
+    playbackFps > GIF_DEFAULTS.MAX_FPS
+  ) {
+    return false
+  }
+
+  return true
 }
 
 const sleep = time =>
@@ -154,6 +198,49 @@ const waitPreviewWithFallback = async (context, triggerMode, page, delay) => {
   }
 }
 
+async function captureFramesToGif(frames, width, height, playbackFps) {
+  const gif = GIFEncoder()
+  const playbackDelay = Math.round(1000 / playbackFps)
+  console.log(
+    `Creating GIF with playback delay: ${playbackDelay}ms (${playbackFps} FPS)`
+  )
+
+  for (const frame of frames) {
+    let pngData
+    if (typeof frame === "string") {
+      // For base64 data from canvas
+      const pureBase64 = frame.replace(/^data:image\/png;base64,/, "")
+      const buffer = Buffer.from(pureBase64, "base64")
+      pngData = await new Promise((resolve, reject) => {
+        new PNG().parse(buffer, (err, data) => {
+          if (err) reject(err)
+          resolve(data)
+        })
+      })
+    } else {
+      // For binary data from viewport
+      pngData = await new Promise((resolve, reject) => {
+        new PNG().parse(frame, (err, data) => {
+          if (err) reject(err)
+          resolve(data)
+        })
+      })
+    }
+
+    const pixels = new Uint8Array(pngData.data)
+    const palette = quantize(pixels, 256)
+    const index = applyPalette(pixels, palette)
+
+    gif.writeFrame(index, width, height, {
+      palette,
+      delay: playbackDelay, // Use the playback timing here
+    })
+  }
+
+  gif.finish()
+  return Buffer.from(gif.bytes())
+}
+
 // process the raw features extracted into attributes
 function processRawTokenFeatures(rawFeatures) {
   const features = []
@@ -212,58 +299,53 @@ const extractFeatures = async page => {
   }
 }
 
-const performCanvasCapture = async (page, canvasSelector) => {
-  try {
-    console.log("converting canvas to PNG with selector:", canvasSelector)
-    // get the base64 image from the CANVAS targetted
-    const base64 = await page.$eval(canvasSelector, el => {
-      if (!el || el.tagName !== "CANVAS") return null
-      return el.toDataURL()
-    })
-    if (!base64) throw new Error("No canvas found")
-    // remove the base64 mimetype at the beginning of the string
-    const pureBase64 = base64.replace(/^data:image\/png;base64,/, "")
-    return Buffer.from(pureBase64, "base64")
-  } catch (err) {
-    console.log(err)
-    throw ERRORS.CANVAS_CAPTURE_FAILED
-  }
-}
-
-const performCapture = async (mode, page, canvasSelector) => {
+const performCapture = async (
+  mode,
+  page,
+  canvasSelector,
+  gif,
+  frameCount,
+  captureInterval,
+  playbackFps
+) => {
   console.log("performing capture...")
 
   // if viewport mode, use the native puppeteer page.screenshot
   if (mode === "VIEWPORT") {
     // we simply take a capture of the viewport
-    return page.screenshot()
+    return captureViewport(page, gif, frameCount, captureInterval, playbackFps)
   }
   // if the mode is canvas, we need to execute som JS on the client to select
   // the canvas and generate a dataURL to bridge it in here
   else if (mode === "CANVAS") {
-    return performCanvasCapture(page, canvasSelector)
+    return captureCanvas(
+      page,
+      canvasSelector,
+      gif,
+      frameCount,
+      captureInterval,
+      playbackFps
+    )
   }
 }
 
-const uploadToS3 = async (context, capture, features) => {
-  // the base key, root folder (the fn name is used)
+const uploadToS3 = async (context, capture, features, isGif) => {
   const baseKey = `${context.functionName}/${context.awsRequestId}`
+  const extension = isGif ? "gif" : "png"
+  const contentType = isGif ? "image/gif" : "image/png"
 
-  // create the S3 client
   const client = new S3Client({
     region: S3_REGION,
   })
 
-  // upload the preview PNG
   await client.send(
     new PutObjectCommand({
       Bucket: S3_BUCKET,
-      Key: `${baseKey}/preview.png`,
+      Key: `${baseKey}/preview.${extension}`,
       Body: capture,
-      ContentType: "image/png",
+      ContentType: contentType,
     })
   )
-
   // upload the features object to a JSON file
   await client.send(
     new PutObjectCommand({
@@ -280,7 +362,7 @@ const uploadToS3 = async (context, capture, features) => {
       client,
       new GetObjectCommand({
         Bucket: S3_BUCKET,
-        Key: `${baseKey}/preview.png`,
+        Key: `${baseKey}/preview.${extension}`,
       }),
       { expiresIn: 3600 }
     ),
@@ -303,12 +385,19 @@ const validateParams = ({
   triggerMode = "DELAY",
   delay,
   canvasSelector,
+  gif,
+  frameCount,
+  captureInterval,
+  playbackFps,
 }) => {
   if (!url || !mode) throw ERRORS.MISSING_PARAMETERS
   if (!isUrlValid(url)) throw ERRORS.UNSUPPORTED_URL
   if (!CAPTURE_MODES.includes(mode)) throw ERRORS.INVALID_PARAMETERS
   if (!isTriggerValid(triggerMode, delay))
     throw ERRORS.INVALID_TRIGGER_PARAMETERS
+
+  if (gif && !validateGifParams(frameCount, captureInterval, playbackFps))
+    throw ERRORS.INVALID_GIF_PARAMETERS
 
   if (mode === "VIEWPORT") {
     if (!resX || !resY) throw ERRORS.MISSING_PARAMETERS
@@ -326,7 +415,143 @@ const validateParams = ({
   } else if (mode === "CANVAS") {
     if (!canvasSelector) throw ERRORS.MISSING_PARAMETERS
   }
-  return { url, mode, resX, resY, triggerMode, delay, canvasSelector }
+  return {
+    url,
+    mode,
+    resX,
+    resY,
+    triggerMode,
+    delay,
+    canvasSelector,
+    gif,
+    frameCount,
+    captureInterval,
+    playbackFps,
+  }
+}
+
+async function captureViewport(
+  page,
+  isGif,
+  frameCount,
+  captureInterval,
+  playbackFps
+) {
+  if (!isGif) {
+    return await page.screenshot()
+  }
+
+  const frames = []
+  let lastCaptureStart = performance.now()
+
+  for (let i = 0; i < frameCount; i++) {
+    // Record start time of screenshot operation
+    const captureStart = performance.now()
+
+    // Capture raw pixels
+    const frameBuffer = await page.screenshot({
+      encoding: "binary",
+    })
+    frames.push(frameBuffer)
+
+    // Calculate how long the capture took
+    const captureDuration = performance.now() - captureStart
+
+    // Calculate the actual time we need to wait
+    // If capture took longer than interval, we'll skip the wait
+    const adjustedInterval = Math.max(0, captureInterval - captureDuration)
+
+    // Log timing information for debugging
+    console.log(`Frame ${i + 1}/${frameCount}:`, {
+      captureDuration,
+      adjustedInterval,
+      totalFrameTime: performance.now() - lastCaptureStart,
+    })
+
+    if (adjustedInterval > 0) {
+      await sleep(adjustedInterval)
+    }
+
+    // Update last capture time for next iteration
+    lastCaptureStart = performance.now()
+  }
+
+  const viewport = page.viewport()
+  return await captureFramesToGif(
+    frames,
+    viewport.width,
+    viewport.height,
+    playbackFps
+  )
+}
+
+async function captureCanvas(
+  page,
+  canvasSelector,
+  isGif,
+  frameCount,
+  captureInterval,
+  playbackFps
+) {
+  try {
+    if (!isGif) {
+      // get the base64 image from the CANVAS targetted
+      const base64 = await page.$eval(canvasSelector, el => {
+        if (!el || el.tagName !== "CANVAS") return null
+        return el.toDataURL()
+      })
+      if (!base64) throw null
+      // remove the base64 mimetype at the beginning of the string
+      const pureBase64 = base64.replace(/^data:image\/png;base64,/, "")
+      return Buffer.from(pureBase64, "base64")
+    }
+
+    const frames = []
+    let lastCaptureStart = Date.now()
+
+    for (let i = 0; i < frameCount; i++) {
+      const captureStart = Date.now()
+
+      // Get raw pixel data from canvas
+      const base64 = await page.$eval(canvasSelector, el => {
+        if (!el || el.tagName !== "CANVAS") return null
+        return el.toDataURL()
+      })
+      if (!base64) throw null
+      frames.push(base64)
+
+      // Calculate timing adjustments
+      const captureDuration = Date.now() - captureStart
+      const adjustedInterval = Math.max(0, captureInterval - captureDuration)
+
+      console.log(`Frame ${i + 1}/${frameCount}:`, {
+        captureDuration,
+        adjustedInterval,
+        totalFrameTime: Date.now() - lastCaptureStart,
+      })
+
+      if (adjustedInterval > 0) {
+        await sleep(adjustedInterval)
+      }
+
+      lastCaptureStart = Date.now()
+    }
+
+    const dimensions = await page.$eval(canvasSelector, el => ({
+      width: el.width,
+      height: el.height,
+    }))
+
+    return await captureFramesToGif(
+      frames,
+      dimensions.width,
+      dimensions.height,
+      playbackFps
+    )
+  } catch (e) {
+    console.error(e)
+    throw ERRORS.CANVAS_CAPTURE_FAILED
+  }
 }
 
 // main invocation handler
@@ -346,8 +571,19 @@ exports.handler = async (event, context) => {
     const { useFallbackCaptureOnTimeout = false, ...body } = JSON.parse(
       event.body
     )
-    const { url, mode, resX, resY, triggerMode, delay, canvasSelector } =
-      validateParams(body)
+    const {
+      url,
+      mode,
+      resX,
+      resY,
+      triggerMode,
+      delay,
+      canvasSelector,
+      gif = false,
+      frameCount = GIF_DEFAULTS.FRAME_COUNT,
+      captureInterval = GIF_DEFAULTS.CAPTURE_INTERVAL,
+      playbackFps = GIF_DEFAULTS.PLAYBACK_FPS,
+    } = validateParams(body)
 
     console.log("running capture with params:", {
       url,
@@ -357,6 +593,10 @@ exports.handler = async (event, context) => {
       triggerMode,
       delay,
       canvasSelector,
+      gif,
+      frameCount,
+      captureInterval,
+      playbackFps,
     })
 
     console.log("bootstrapping chromium...")
@@ -403,10 +643,18 @@ exports.handler = async (event, context) => {
     if (response.status() !== 200) throw ERRORS.HTTP_ERROR
 
     const processCapture = async () => {
-      const capture = await performCapture(mode, page, canvasSelector)
+      const capture = await performCapture(
+        mode,
+        page,
+        canvasSelector,
+        gif,
+        frameCount,
+        captureInterval,
+        playbackFps
+      )
       const features = (await extractFeatures(page)) || []
       console.log("uploading capture to S3...")
-      const upload = await uploadToS3(context, capture, features)
+      const upload = await uploadToS3(context, capture, features, gif)
       console.log("successfully uploaded capture to S3")
       return upload
     }
