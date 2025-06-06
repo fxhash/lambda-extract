@@ -299,8 +299,9 @@ const extractFeatures = async page => {
   }
 }
 
-const resizeCanvas = (canvas, resX, resY) => {
-  const sharp = require("sharp")
+let sharp = null
+const resizeCanvas = async (canvas, resX, resY) => {
+  if (!sharp) sharp = require("sharp")
   const sharpCanvas = sharp(canvas)
   return sharpCanvas.resize(resX, resY).toBuffer()
 }
