@@ -299,10 +299,18 @@ const extractFeatures = async page => {
   }
 }
 
+const resizeCanvas = (canvas, resX, resY) => {
+  const sharp = require("sharp")
+  const sharpCanvas = sharp(canvas)
+  return sharpCanvas.resize(resX, resY).toBuffer()
+}
+
 const performCapture = async (
   mode,
   page,
   canvasSelector,
+  resX,
+  resY,
   gif,
   frameCount,
   captureInterval,
@@ -318,7 +326,7 @@ const performCapture = async (
   // if the mode is canvas, we need to execute som JS on the client to select
   // the canvas and generate a dataURL to bridge it in here
   else if (mode === "CANVAS") {
-    return captureCanvas(
+    const canvas = await captureCanvas(
       page,
       canvasSelector,
       gif,
@@ -326,6 +334,8 @@ const performCapture = async (
       captureInterval,
       playbackFps
     )
+    if (resX && resY) return resizeCanvas(canvas, resX, resY)
+    return canvas
   }
 }
 
@@ -647,6 +657,8 @@ exports.handler = async (event, context) => {
         mode,
         page,
         canvasSelector,
+        resX,
+        resY,
         gif,
         frameCount,
         captureInterval,
