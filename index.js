@@ -299,10 +299,34 @@ const extractFeatures = async page => {
   }
 }
 
+let sharp = null
+const resizeCanvas = async (image, resX, resY) => {
+  if (!sharp) sharp = require("sharp")
+  const sharpImage = sharp(image)
+
+  /**
+   * TODO: we should eventually get the canvas width/height from the page context
+   * when running captureCanvas() - can bypass sharp if the image is small enough
+   */
+  // get current image dimensions to check if resize is needed
+  const metadata = await sharpImage.metadata()
+  const currentWidth = metadata.width
+  const currentHeight = metadata.height
+
+  // check if current resolution is already <= target resolution
+  if (currentWidth <= resX && currentHeight <= resY) {
+    // no resize needed, return original image
+    return image
+  }
+
+  return sharpImage.resize(resX, resY, { fit: "inside" }).toBuffer()
+}
 const performCapture = async (
   mode,
   page,
   canvasSelector,
+  resX,
+  resY,
   gif,
   frameCount,
   captureInterval,
@@ -318,7 +342,7 @@ const performCapture = async (
   // if the mode is canvas, we need to execute som JS on the client to select
   // the canvas and generate a dataURL to bridge it in here
   else if (mode === "CANVAS") {
-    return captureCanvas(
+    const canvas = await captureCanvas(
       page,
       canvasSelector,
       gif,
@@ -326,6 +350,8 @@ const performCapture = async (
       captureInterval,
       playbackFps
     )
+    if (resX && resY) return resizeCanvas(canvas, resX, resY)
+    return canvas
   }
 }
 
@@ -647,6 +673,8 @@ exports.handler = async (event, context) => {
         mode,
         page,
         canvasSelector,
+        resX,
+        resY,
         gif,
         frameCount,
         captureInterval,
