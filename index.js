@@ -300,12 +300,27 @@ const extractFeatures = async page => {
 }
 
 let sharp = null
-const resizeCanvas = async (canvas, resX, resY) => {
+const resizeCanvas = async (image, resX, resY) => {
   if (!sharp) sharp = require("sharp")
-  const sharpCanvas = sharp(canvas)
-  return sharpCanvas.resize(resX, resY).toBuffer()
-}
+  const sharpImage = sharp(image)
 
+  /**
+   * TODO: we should eventually get the canvas width/height from the page context
+   * when running captureCanvas() - can bypass sharp if the image is small enough
+   */
+  // get current image dimensions to check if resize is needed
+  const metadata = await sharpImage.metadata()
+  const currentWidth = metadata.width
+  const currentHeight = metadata.height
+
+  // check if current resolution is already <= target resolution
+  if (currentWidth <= resX && currentHeight <= resY) {
+    // no resize needed, return original image
+    return image
+  }
+
+  return sharpImage.resize(resX, resY, { fit: "inside" }).toBuffer()
+}
 const performCapture = async (
   mode,
   page,
