@@ -18,7 +18,7 @@ jobs:
       - name: Create zip bundle
         run: |
           zip -r deploy.zip . -x "*yarn.lock*" -x "*.git*" -x "*.gitignore*" -x "*deploy.sh*" -x "*package-lock.json*"
-      - uses: actions/upload-artifact@v3
+      - uses: actions/upload-artifact@v4
         with:
           name: deploy-${{ github.sha }}
           path: deploy.zip
@@ -42,7 +42,7 @@ jobs:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID_PRD }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY_PRD }}
           aws-region: ${{ secrets.AWS_REGION }}
-      - uses: actions/download-artifact@v3
+      - uses: actions/download-artifact@v4
         with:
           name: deploy-${{ github.sha }}
       - name: "Upload dev deployment file"
