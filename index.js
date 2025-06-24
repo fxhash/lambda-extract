@@ -525,23 +525,24 @@ async function captureFramesProgrammatically(page, captureFrameFunction) {
   })
 
   // wait for events in browser context
-  await page.evaluate(function () {
-    return new Promise(function (resolve) {
-      window.addEventListener("fxhash-capture-frame", async event => {
-        const frameCount = await window.captureFrame()
+  await page.evaluate(
+    function (maxFrames, delayMax) {
+      return new Promise(function (resolve) {
+        window.addEventListener("fxhash-capture-frame", async event => {
+          const frameCount = await window.captureFrame()
 
-        if (
-          event.detail?.isLastFrame ||
-          frameCount >= GIF_DEFAULTS.MAX_FRAMES
-        ) {
-          resolve()
-        }
+          if (event.detail?.isLastFrame || frameCount >= maxFrames) {
+            resolve()
+          }
+        })
+
+        // timeout fallback
+        setTimeout(() => resolve(), delayMax)
       })
-
-      // timeout fallback
-      setTimeout(() => resolve(), DELAY_MAX)
-    })
-  })
+    },
+    GIF_DEFAULTS.MAX_FRAMES,
+    DELAY_MAX
+  )
 
   return frames
 }
