@@ -516,6 +516,10 @@ async function captureFramesWithTiming(
 async function captureFramesProgrammatically(page, captureFrameFunction) {
   const frames = []
 
+  page.on("console", msg => {
+    console.log("BROWSER:", msg.text())
+  })
+
   // set up the event listener and capture loop
   await page.exposeFunction("captureFrame", async () => {
     const frame = await captureFrameFunction()
