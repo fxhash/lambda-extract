@@ -535,7 +535,7 @@ async function captureFramesProgrammatically(page, captureFrameFunction) {
         const handleFrameCapture = async event => {
           const frameCount = await window.captureFrame()
 
-          console.log(event)
+          console.log(JSON.stringify(event))
           console.log(JSON.stringify({ frameCount, maxFrames }))
           console.log(
             JSON.stringify({ isLastFrame: event.detail?.isLastFrame })
