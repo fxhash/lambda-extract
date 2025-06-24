@@ -536,8 +536,10 @@ async function captureFramesProgrammatically(page, captureFrameFunction) {
           const frameCount = await window.captureFrame()
 
           console.log(event)
-          console.log({ frameCount, maxFrames })
-          console.log({ isLastFrame: event.detail?.isLastFrame })
+          console.log(JSON.stringify({ frameCount, maxFrames }))
+          console.log(
+            JSON.stringify({ isLastFrame: event.detail?.isLastFrame })
+          )
           if (event.detail?.isLastFrame || frameCount >= maxFrames) {
             window.removeEventListener(
               "fxhash-capture-frame",
