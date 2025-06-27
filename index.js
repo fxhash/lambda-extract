@@ -516,15 +516,10 @@ async function captureFramesWithTiming(
 async function captureFramesProgrammatically(page, captureFrameFunction) {
   const frames = []
 
-  page.on("console", msg => {
-    console.log("BROWSER:", msg.text())
-  })
-
   // set up the event listener and capture loop
   await page.exposeFunction("captureFrame", async () => {
     const frame = await captureFrameFunction()
     frames.push(frame)
-    console.log(`programmatic frame ${frames.length} captured`)
     return frames.length
   })
 
@@ -535,11 +530,6 @@ async function captureFramesProgrammatically(page, captureFrameFunction) {
         const handleFrameCapture = async event => {
           const frameCount = await window.captureFrame()
 
-          console.log(JSON.stringify(event))
-          console.log(JSON.stringify({ frameCount, maxFrames }))
-          console.log(
-            JSON.stringify({ isLastFrame: event.detail?.isLastFrame })
-          )
           if (event.detail?.isLastFrame || frameCount >= maxFrames) {
             window.removeEventListener(
               "fxhash-capture-frame",
