@@ -59,6 +59,7 @@ const SUPPORTED_URLS = [
   "https://onchfs.fxhash-dev2.xyz/",
   "https://onchfs.fxhash2.xyz/",
   "https://onchfs.fxhash.xyz/",
+  "https://satisfactory-coral-cougar.myfilebase.com/ipfs/",
 ]
 // the list of errors the lambda can return
 const ERRORS = {
